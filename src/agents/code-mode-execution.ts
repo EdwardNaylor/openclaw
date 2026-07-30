@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { codeModeReplayIdForToolCall } from "./code-mode-bridge.js";
 import { awaitCodeModeDeadline } from "./code-mode-deadline.js";
 import {
@@ -215,6 +216,29 @@ async function waitForPending(
   }
 }
 
+function containsVisualObservation(value: unknown, seen = new Set<object>()): boolean {
+  if (Array.isArray(value)) {
+    if (seen.has(value)) {
+      return false;
+    }
+    seen.add(value);
+    return value.some((entry) => containsVisualObservation(entry, seen));
+  }
+  if (!isRecord(value) || seen.has(value)) {
+    return false;
+  }
+  seen.add(value);
+  if (
+    value.type === "image" &&
+    ((typeof value.data === "string" && value.data.trim().length > 0) ||
+      (typeof value.mediaRef === "string" && value.mediaRef.trim().length > 0) ||
+      (typeof value.mimeType === "string" && value.mimeType.toLowerCase().startsWith("image/")))
+  ) {
+    return true;
+  }
+  return Object.values(value).some((entry) => containsVisualObservation(entry, seen));
+}
+
 async function settleCodeModeResult(params: {
   result: CodeModeWorkerResult;
   output: unknown[];
@@ -364,6 +388,30 @@ async function settleCodeModeResult(params: {
       // attached to their original bridge ids across the restored snapshot.
       const settledRequests: SettledBridgeRequest[] =
         settledBridgeRequestsInCompletionOrder(pending);
+      if (
+        settledRequests.some((request) => request.ok && containsVisualObservation(request.value))
+      ) {
+        // A screenshot changes the facts available to the model. Park before
+        // QuickJS can run dependent clicks or typing against an unseen state.
+        // The random run id is returned only now, so wait requires a new model
+        // response that receives this visual result first.
+        return storeSnapshotState({
+          runId: activeRunId,
+          replayId: params.codeModeReplayId,
+          pending,
+          replaySafe: false,
+          settlementMode: result.settlementMode,
+          snapshotBytes: result.snapshotBytes,
+          parentToolCallId: params.parentToolCallId,
+          ctx: params.ctx,
+          config: params.config,
+          runtime: params.runtime,
+          namespaceRuntime: params.namespaceRuntime,
+          output,
+          deliveredOutputCount,
+          waitingReason: "visual_observation",
+        });
+      }
       pending = pending.filter((entry) => !entry.settled);
       // The resumed guest inherits only the remaining shared budget as its
       // QuickJS interrupt deadline; the extra host margin is watchdog grace,

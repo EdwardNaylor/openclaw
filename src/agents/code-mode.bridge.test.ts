@@ -133,6 +133,57 @@ describe("Code Mode bridge settlement and cancellation", () => {
     expect(testing.activeRuns.size).toBe(0);
   });
 
+  it("pauses after visual tool results before dependent calls resume", async () => {
+    const { config, catalogRef, tools: codeModeTools } = createCodeModeHarness();
+    const screenshot = pluginToolWithExecute(
+      "fake_screenshot",
+      "Capture the current UI",
+      async () => ({
+        content: [{ type: "image", data: "AQ==", mimeType: "image/png" }],
+        details: { captured: true },
+      }),
+    );
+    const mutate = pluginTool("fake_mutate", "Mutate the current UI");
+    applyCodeModeCatalog({
+      tools: [...codeModeTools, screenshot, mutate],
+      config,
+      sessionId: "session-code-mode",
+      sessionKey: "agent:main:main",
+      runId: "run-code-mode",
+      catalogRef,
+    });
+
+    const first = resultDetails(
+      await expectDefined(codeModeTools[0], "exec tool test invariant").execute(
+        "code-call-visual-boundary",
+        {
+          code: `
+            await tools.call("fake_screenshot", {});
+            return await tools.callValue("fake_mutate", {});
+          `,
+        },
+      ),
+    );
+
+    expect(first).toMatchObject({
+      status: "waiting",
+      reason: "visual_observation",
+      pendingToolCalls: [],
+    });
+    expect(screenshot.execute).toHaveBeenCalledTimes(1);
+    expect(mutate.execute).not.toHaveBeenCalled();
+
+    const completed = resultDetails(
+      await expectDefined(codeModeTools[1], "wait tool test invariant").execute(
+        "code-wait-visual-boundary",
+        { runId: first.runId },
+      ),
+    );
+
+    expect(completed.status).toBe("completed");
+    expect(mutate.execute).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the actual winner when the later-started nested tool settles first", async () => {
     const { config, catalogRef, tools: codeModeTools } = createCodeModeHarness();
     let firstAborted = false;

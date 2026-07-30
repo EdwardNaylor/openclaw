@@ -347,6 +347,7 @@ export function storeSnapshotState(params: {
   namespaceRuntime: CodeModeNamespaceRuntime;
   output: unknown[];
   deliveredOutputCount?: number;
+  waitingReason?: "pending_tools" | "visual_observation" | "yield";
 }) {
   const now = Date.now();
   const expiresAt = resolveCodeModeSnapshotExpiresAt(now, params.config.snapshotTtlSeconds);
@@ -383,7 +384,7 @@ export function storeSnapshotState(params: {
   return {
     status: "waiting" as const,
     runId: params.runId,
-    reason: codeModeWaitingReason(params.pending),
+    reason: params.waitingReason ?? codeModeWaitingReason(params.pending),
     pendingToolCalls: pendingToolCalls(params.pending),
     replaySafe: params.replaySafe,
     output: params.output.slice(params.deliveredOutputCount ?? 0),
